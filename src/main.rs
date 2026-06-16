@@ -29,7 +29,9 @@ const KEYS: &[(&str, &str)] = &[
     ("Enter  i", "edit the current cell"),
     ("=", "start a formula in the current cell"),
     ("c", "AI edit \u{2014} change the sheet by instruction (claude)"),
-    ("C", "set cell colour (prism picker)"),
+    ("v", "start / stop a rectangular selection"),
+    ("C", "set cell / selection colour (prism picker)"),
+    ("D", "clear cell / selection colour"),
     ("u", "undo the last edit"),
     ("d  Del", "clear the current cell"),
     ("Tab S-Tab", "next / previous sheet"),
@@ -52,6 +54,7 @@ struct App {
     foot: Pane, // key hints / prompts (row h)
     status: String,
     undo: Vec<(usize, model::Sheet)>, // (active index, sheet snapshot) before each edit
+    sel_anchor: Option<(u32, u32)>,   // Some => a rectangular selection from here to the cursor
 }
 
 impl App {
@@ -71,6 +74,26 @@ impl App {
             foot,
             status: String::new(),
             undo: Vec::new(),
+            sel_anchor: None,
+        }
+    }
+
+    /// The selected rectangle as ((r0,c0),(r1,c1)) — just the cursor cell when
+    /// no selection is active.
+    fn selection_rect(&self) -> ((u32, u32), (u32, u32)) {
+        match self.sel_anchor {
+            Some((ar, ac)) => (
+                (ar.min(self.cur_row), ac.min(self.cur_col)),
+                (ar.max(self.cur_row), ac.max(self.cur_col)),
+            ),
+            None => ((self.cur_row, self.cur_col), (self.cur_row, self.cur_col)),
+        }
+    }
+
+    fn in_selection(&self, r: u32, c: u32) -> bool {
+        self.sel_anchor.is_some() && {
+            let ((r0, c0), (r1, c1)) = self.selection_rect();
+            r >= r0 && r <= r1 && c >= c0 && c <= c1
         }
     }
 
@@ -85,6 +108,7 @@ impl App {
 
     /// Restore the most recent snapshot.
     fn undo(&mut self) {
+        self.sel_anchor = None;
         match self.undo.pop() {
             Some((idx, sheet)) => {
                 self.book.active = idx.min(self.book.sheets.len().saturating_sub(1));
@@ -195,26 +219,32 @@ impl App {
                 let val = sheet.value(r, c);
                 let cell = fit_cell(&val, COL_W);
                 let (cfg, cbg) = sheet.colors(r, c);
+                let empty = matches!(val, Value::Empty);
                 if r == self.cur_row && c == self.cur_col {
-                    if matches!(val, Value::Empty) {
-                        // A bg colour over pure whitespace gets dropped (no glyph
-                        // to anchor the run). Paint a solid white bar instead — it
-                        // always renders and reads as a white cell.
+                    // Cursor cell: black on bright white (empty → solid white bar,
+                    // since a bg over pure whitespace gets dropped).
+                    if empty {
                         out.push_str(&style::coded(&"\u{2588}".repeat(COL_W), "15"));
                     } else {
-                        // Cursor cell: black on bright white, filling the whole cell.
                         out.push_str(&style::coded(&cell, "0,15"));
                     }
+                } else if self.in_selection(r, c) {
+                    // Selection band (grey), overrides the cell's own colour.
+                    if empty {
+                        out.push_str(&style::coded(&"\u{2588}".repeat(COL_W), "240"));
+                    } else {
+                        out.push_str(&style::coded(&cell, "0,250"));
+                    }
                 } else if cfg.is_some() || cbg.is_some() {
-                    if matches!(val, Value::Empty) {
-                        // Colour over an empty cell: a solid bar in the bg colour
-                        // (anchors the run); fg-only on an empty cell shows nothing.
+                    if empty {
+                        // Solid bar in the bg colour (anchors the run); fg-only on
+                        // an empty cell shows nothing.
                         match cbg {
-                            Some(bg) => out.push_str(&style::coded(&"\u{2588}".repeat(COL_W), &bg.to_string())),
+                            Some(bg) => out.push_str(&style::coded_rgb(&"\u{2588}".repeat(COL_W), Some(bg), None)),
                             None => out.push_str(&cell),
                         }
                     } else {
-                        out.push_str(&style::coded(&cell, &color_spec(cfg, cbg)));
+                        out.push_str(&style::coded_rgb(&cell, cfg, cbg));
                     }
                 } else {
                     out.push_str(&cell);
@@ -229,7 +259,7 @@ impl App {
         // --- foot ---
         let foot = if self.status.is_empty() {
             format!(
-                " hjkl/\u{2191}\u{2193} move  Enter edit  = formula  c AI  C colour  u undo  d clear  Tab sheet  s save  q quit   grid {}",
+                " hjkl move  Enter edit  = formula  v select  C colour  D clr  c AI  u undo  d clear  s save  ? keys  q quit   grid {}",
                 VERSION
             )
         } else {
@@ -239,6 +269,7 @@ impl App {
     }
 
     fn edit_cell(&mut self, initial: Option<&str>) {
+        self.sel_anchor = None;
         let cref = cell_ref(self.cur_row, self.cur_col);
         let cur = match initial {
             Some(s) => s.to_string(),
@@ -255,23 +286,47 @@ impl App {
         }
     }
 
-    /// Set the current cell's colour. Opens the prism picker if available,
-    /// otherwise falls back to a "fg,bg" text prompt.
+    /// Set colour on the current cell or selection — the prism picker if
+    /// available, else a "fg,bg" text prompt. Applies the chosen pair to the
+    /// whole selection rectangle.
     fn set_color(&mut self) {
-        if !self.pick_color_prism() {
-            self.set_color_prompt();
+        let (cf, cb) = self.book.sheet().colors(self.cur_row, self.cur_col);
+        if let Some((fg, bg)) = self.pick_color_prism(cf, cb).or_else(|| self.prompt_color(cf, cb)) {
+            self.apply_colors(fg, bg);
         }
     }
 
-    /// Launch prism as a visual colour picker, preloaded with the cell's current
-    /// colours; map the chosen hex back to the nearest xterm-256 palette index.
-    /// Returns false only when prism can't be launched (caller falls back).
-    fn pick_color_prism(&mut self) -> bool {
-        let (fg, bg) = self.book.sheet().colors(self.cur_row, self.cur_col);
+    /// Apply (fg, bg) to every cell in the selection rect, then clear it.
+    fn apply_colors(&mut self, fg: Option<model::Rgb>, bg: Option<model::Rgb>) {
+        self.snapshot();
+        let ((r0, c0), (r1, c1)) = self.selection_rect();
+        for r in r0..=r1 {
+            for c in c0..=c1 {
+                self.book.sheet_mut().set_colors(r, c, fg, bg);
+            }
+        }
+        self.book.dirty = true;
+        self.sel_anchor = None;
+    }
+
+    /// Clear colour on the current cell or selection.
+    fn clear_color(&mut self) {
+        self.apply_colors(None, None);
+        self.status = "Colour cleared".into();
+    }
+
+    /// Launch prism (preloaded with fg/bg) as a picker; returns the chosen pair,
+    /// or None when prism can't be launched (caller falls back to the prompt).
+    /// prism writes its result to a file (`--out`) so its UI and grid don't clash.
+    fn pick_color_prism(
+        &mut self,
+        fg: Option<model::Rgb>,
+        bg: Option<model::Rgb>,
+    ) -> Option<(Option<model::Rgb>, Option<model::Rgb>)> {
         let outfile = format!("/tmp/grid_pick_{}.txt", std::process::id());
         let _ = std::fs::remove_file(&outfile);
-        let fg_hex = fg.map(io::palette_hex).unwrap_or_else(|| "#ffffff".into());
-        let bg_hex = bg.map(io::palette_hex).unwrap_or_else(|| "#000000".into());
+        let fg_hex = fg.map(rgb_hex).unwrap_or_else(|| "#ffffff".into());
+        let bg_hex = bg.map(rgb_hex).unwrap_or_else(|| "#000000".into());
         Crust::cleanup();
         let status = Command::new("prism")
             .arg("--pair")
@@ -286,47 +341,48 @@ impl App {
         self.foot.invalidate();
         if status.is_err() {
             let _ = std::fs::remove_file(&outfile);
-            return false; // prism not on PATH → caller uses the text prompt
+            return None; // prism not on PATH → caller uses the text prompt
         }
+        let mut nfg = fg;
+        let mut nbg = bg;
         if let Ok(text) = std::fs::read_to_string(&outfile) {
-            let mut nfg = fg;
-            let mut nbg = bg;
             for line in text.lines() {
                 if let Some(h) = line.strip_prefix("fg=") {
-                    nfg = hex_to_palette(h.trim());
+                    nfg = style::parse_hex_color(h.trim());
                 } else if let Some(h) = line.strip_prefix("bg=") {
-                    nbg = hex_to_palette(h.trim());
+                    nbg = style::parse_hex_color(h.trim());
                 }
             }
-            self.snapshot();
-            self.book.sheet_mut().set_colors(self.cur_row, self.cur_col, nfg, nbg);
-            self.book.dirty = true;
         }
         let _ = std::fs::remove_file(&outfile);
-        true
+        Some((nfg, nbg))
     }
 
-    /// Text fallback when prism isn't available: "fg,bg" (palette 0-255 or a
-    /// colour name; blank clears).
-    fn set_color_prompt(&mut self) {
-        let (fg, bg) = self.book.sheet().colors(self.cur_row, self.cur_col);
+    /// Text fallback: "fg,bg" (hex `#rrggbb` or a colour name; blank clears).
+    fn prompt_color(
+        &mut self,
+        fg: Option<model::Rgb>,
+        bg: Option<model::Rgb>,
+    ) -> Option<(Option<model::Rgb>, Option<model::Rgb>)> {
         let cur = if fg.is_some() || bg.is_some() { color_spec(fg, bg) } else { String::new() };
-        let prompt = "Cell colour fg,bg (0-255 or name; blank clears): ";
-        if let Some(input) = self.foot.ask_or_cancel(prompt, &cur) {
-            let (fg, bg) = parse_color_spec(&input);
-            self.snapshot();
-            self.book.sheet_mut().set_colors(self.cur_row, self.cur_col, fg, bg);
-            self.book.dirty = true;
-        }
+        let prompt = "Cell colour fg,bg (#rrggbb or name; blank clears): ";
+        self.foot.ask_or_cancel(prompt, &cur).map(|s| parse_color_spec(&s))
     }
 
     fn clear_cell(&mut self) {
-        if !self.book.sheet().raw(self.cur_row, self.cur_col).is_empty() {
+        let ((r0, c0), (r1, c1)) = self.selection_rect();
+        let any = (r0..=r1).any(|r| (c0..=c1).any(|c| !self.book.sheet().raw(r, c).is_empty()));
+        if any {
             self.snapshot();
-            self.book.sheet_mut().set(self.cur_row, self.cur_col, String::new());
+            for r in r0..=r1 {
+                for c in c0..=c1 {
+                    self.book.sheet_mut().set(r, c, String::new());
+                }
+            }
             self.book.dirty = true;
             eval::recalc(self.book.sheet_mut());
         }
+        self.sel_anchor = None;
     }
 
     /// AI edit: prompt for an instruction, hand the whole sheet to `claude -p`
@@ -334,6 +390,7 @@ impl App {
     /// Claude runs (shown as "AI working…") — fine, since input is blocking
     /// anyway and this only fires on the `c` key.
     fn ai_edit(&mut self) {
+        self.sel_anchor = None;
         let instr = match self.foot.ask_or_cancel("AI edit: ", "") {
             Some(s) if !s.trim().is_empty() => s,
             _ => return,
@@ -406,6 +463,7 @@ impl App {
         }
         let cur = self.book.active as i32;
         self.book.active = (((cur + delta) % n + n) % n) as usize;
+        self.sel_anchor = None;
         self.cur_row = 0;
         self.cur_col = 0;
         self.top_row = 0;
@@ -448,6 +506,15 @@ impl App {
             "=" => self.edit_cell(Some("=")),
             "c" => self.ai_edit(),
             "C" => self.set_color(),
+            "D" => self.clear_color(),
+            "v" => {
+                self.sel_anchor = if self.sel_anchor.is_some() {
+                    None
+                } else {
+                    Some((self.cur_row, self.cur_col))
+                };
+            }
+            "ESC" => self.sel_anchor = None,
             "u" => self.undo(),
             "TAB" => self.switch_sheet(1),
             "S-TAB" => self.switch_sheet(-1),
@@ -493,46 +560,45 @@ fn make_panes(w: u16, h: u16) -> (Pane, Pane, Pane) {
     (top, body, foot)
 }
 
-/// Map a `#rrggbb` hex to the nearest xterm-256 palette index.
-fn hex_to_palette(h: &str) -> Option<u8> {
-    style::parse_hex_color(h).map(|(r, g, b)| style::rgb_to_xterm(r, g, b))
+/// `#rrggbb` for a colour, empty for None (for the text-prompt prefill).
+fn rgb_hex(c: model::Rgb) -> String {
+    format!("#{:02x}{:02x}{:02x}", c.0, c.1, c.2)
+}
+fn opt_hex(c: Option<model::Rgb>) -> String {
+    c.map(rgb_hex).unwrap_or_default()
 }
 
-/// Build a crust `coded` spec ("fg,bg") from optional palette colours.
-fn color_spec(fg: Option<u8>, bg: Option<u8>) -> String {
-    format!(
-        "{},{}",
-        fg.map(|n| n.to_string()).unwrap_or_default(),
-        bg.map(|n| n.to_string()).unwrap_or_default()
-    )
+/// Build the "fg,bg" hex spec shown when re-editing a coloured cell.
+fn color_spec(fg: Option<model::Rgb>, bg: Option<model::Rgb>) -> String {
+    format!("{},{}", opt_hex(fg), opt_hex(bg))
 }
 
-/// Parse one colour token: a 0-255 palette number, a common name, or blank (None).
-fn parse_color(tok: &str) -> Option<u8> {
-    let t = tok.trim().to_ascii_lowercase();
+/// Parse one colour token: `#rrggbb`/`rgb`, a common name, or blank (None).
+fn parse_color(tok: &str) -> Option<model::Rgb> {
+    let t = tok.trim();
     if t.is_empty() {
         return None;
     }
-    if let Ok(n) = t.parse::<u8>() {
-        return Some(n);
+    if let Some(rgb) = style::parse_hex_color(t) {
+        return Some(rgb);
     }
-    Some(match t.as_str() {
-        "black" => 0,
-        "red" => 1,
-        "green" => 2,
-        "yellow" => 3,
-        "blue" => 4,
-        "magenta" => 5,
-        "cyan" => 6,
-        "white" => 7,
-        "grey" | "gray" => 8,
-        "orange" => 208,
+    Some(match t.to_ascii_lowercase().as_str() {
+        "black" => (0, 0, 0),
+        "red" => (0xcc, 0, 0),
+        "green" => (0, 0xaa, 0),
+        "yellow" => (0xcc, 0xaa, 0),
+        "blue" => (0, 0, 0xcc),
+        "magenta" => (0xaa, 0, 0xaa),
+        "cyan" => (0, 0xaa, 0xaa),
+        "white" => (0xff, 0xff, 0xff),
+        "grey" | "gray" => (0x88, 0x88, 0x88),
+        "orange" => (0xf7, 0x4c, 0x00),
         _ => return None,
     })
 }
 
 /// Parse a "fg,bg" colour spec into (fg, bg).
-fn parse_color_spec(s: &str) -> (Option<u8>, Option<u8>) {
+fn parse_color_spec(s: &str) -> (Option<model::Rgb>, Option<model::Rgb>) {
     let mut it = s.splitn(2, ',');
     let fg = it.next().and_then(parse_color);
     let bg = it.next().and_then(parse_color);

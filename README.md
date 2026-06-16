@@ -32,9 +32,11 @@ No menus, no ribbons: keyboard-driven, instant, scriptable.
   cycle detection (`#CYCLE`).
 - **AI editing** — `c` → describe a change in plain English; Claude rewrites the
   sheet, formulas included.
-- **Cell colours** — set a cell's foreground/background (`C`) with the
-  [prism](https://github.com/isene/prism) colour picker (falls back to a text
-  prompt); persists to xlsx natively and to CSV via a `.gcolors` sidecar.
+- **Range selection** — `v` starts a rectangular selection; colouring, clearing
+  colour (`D`) and clearing content all apply to the whole block.
+- **Cell colours** — true-colour (24-bit) foreground/background (`C`) via the
+  [prism](https://github.com/isene/prism) picker (or a `#rrggbb`/name prompt);
+  persists to xlsx natively and to CSV via a `.gcolors` sidecar.
 - **Undo** — every edit, clear, colour and AI change is undoable (`u`).
 - **Multi-sheet** — `Tab` cycles sheets in a workbook.
 - **Dates** — Excel date serials shown as readable `YYYY-MM-DD`.
@@ -71,9 +73,11 @@ grid new.csv         # start a fresh sheet
 | `Enter` `i` | edit cell |
 | `=` | start a formula |
 | `c` | AI edit (Claude) |
-| `C` | set cell colour (prism picker) |
+| `v` | start / stop rectangular selection |
+| `C` | set cell / selection colour (prism) |
+| `D` | clear cell / selection colour |
 | `u` | undo |
-| `d` `Del` | clear cell |
+| `d` `Del` | clear cell / selection content |
 | `Tab` `S-Tab` | next / previous sheet |
 | `s` | save |
 | `?` | help |

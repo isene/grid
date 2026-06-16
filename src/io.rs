@@ -6,7 +6,7 @@
 use std::io::{Error, ErrorKind};
 use std::path::Path;
 
-use crate::model::{fmt_number, Book, Sheet};
+use crate::model::{fmt_number, Book, Rgb, Sheet};
 
 const SPREADSHEET_EXTS: [&str; 5] = ["xlsx", "xlsm", "xlsb", "xls", "ods"];
 
@@ -45,12 +45,13 @@ fn save_xlsx(book: &Book) -> std::io::Result<()> {
             let col = c as u16;
             // Build a cell format from its colours (xterm-256 → RGB).
             let fmt = if cell.fg.is_some() || cell.bg.is_some() {
+                let rgb = |(r, g, b): Rgb| Color::RGB((r as u32) << 16 | (g as u32) << 8 | b as u32);
                 let mut f = Format::new();
                 if let Some(fg) = cell.fg {
-                    f = f.set_font_color(Color::RGB(palette_rgb(fg)));
+                    f = f.set_font_color(rgb(fg));
                 }
                 if let Some(bg) = cell.bg {
-                    f = f.set_background_color(Color::RGB(palette_rgb(bg)));
+                    f = f.set_background_color(rgb(bg));
                 }
                 Some(f)
             } else {
@@ -80,33 +81,6 @@ fn save_xlsx(book: &Book) -> std::io::Result<()> {
     Ok(())
 }
 
-/// xterm-256 palette index → `#rrggbb`, for preloading the prism picker.
-pub fn palette_hex(n: u8) -> String {
-    format!("#{:06x}", palette_rgb(n))
-}
-
-/// xterm-256 palette index → 0xRRGGBB, for xlsx cell colours.
-fn palette_rgb(n: u8) -> u32 {
-    const BASE: [u32; 16] = [
-        0x000000, 0x800000, 0x008000, 0x808000, 0x000080, 0x800080, 0x008080, 0xc0c0c0,
-        0x808080, 0xff0000, 0x00ff00, 0xffff00, 0x0000ff, 0xff00ff, 0x00ffff, 0xffffff,
-    ];
-    match n {
-        0..=15 => BASE[n as usize],
-        16..=231 => {
-            let n = n - 16;
-            let conv = |v: u8| -> u32 { if v == 0 { 0 } else { 55 + 40 * v as u32 } };
-            let r = conv(n / 36);
-            let g = conv((n / 6) % 6);
-            let b = conv(n % 6);
-            (r << 16) | (g << 8) | b
-        }
-        232..=255 => {
-            let v = 8 + 10 * (n as u32 - 232);
-            (v << 16) | (v << 8) | v
-        }
-    }
-}
 
 /// Read a workbook with calamine. Every sheet is loaded (cycle with Tab);
 /// cells carry their *computed* values as literals. Formula text and cell
@@ -216,14 +190,23 @@ fn sidecar_path(path: &Path) -> std::path::PathBuf {
     std::path::PathBuf::from(format!("{}.gcolors", path.display()))
 }
 
+fn parse_rgb(s: &str) -> Option<Rgb> {
+    if s.is_empty() { None } else { crust::style::parse_hex_color(s) }
+}
+
+/// `#rrggbb` for a colour, or empty for None.
+fn opt_hex(c: Option<Rgb>) -> String {
+    c.map(|(r, g, b)| format!("#{:02x}{:02x}{:02x}", r, g, b)).unwrap_or_default()
+}
+
 fn apply_color_sidecar(path: &Path, sheet: &mut Sheet) {
     let Ok(text) = std::fs::read_to_string(sidecar_path(path)) else { return };
     for line in text.lines() {
         let p: Vec<&str> = line.split(',').collect();
         if p.len() == 4 {
             if let (Ok(r), Ok(c)) = (p[0].parse::<u32>(), p[1].parse::<u32>()) {
-                let fg = p[2].parse::<u8>().ok();
-                let bg = p[3].parse::<u8>().ok();
+                let fg = parse_rgb(p[2]);
+                let bg = parse_rgb(p[3]);
                 if fg.is_some() || bg.is_some() {
                     sheet.set_colors(r, c, fg, bg);
                 }
@@ -237,13 +220,7 @@ fn write_color_sidecar(book: &Book) -> std::io::Result<()> {
     let mut s = String::new();
     for (&(r, c), cell) in &sheet.cells {
         if cell.fg.is_some() || cell.bg.is_some() {
-            s.push_str(&format!(
-                "{},{},{},{}\n",
-                r,
-                c,
-                cell.fg.map(|n| n.to_string()).unwrap_or_default(),
-                cell.bg.map(|n| n.to_string()).unwrap_or_default()
-            ));
+            s.push_str(&format!("{},{},{},{}\n", r, c, opt_hex(cell.fg), opt_hex(cell.bg)));
         }
     }
     let path = sidecar_path(&book.path);

@@ -37,15 +37,18 @@ pub fn fmt_number(n: f64) -> String {
     }
 }
 
+/// 24-bit colour.
+pub type Rgb = (u8, u8, u8);
+
 #[derive(Clone, Default)]
 pub struct Cell {
     /// Exactly what the user typed (literal or `=formula`).
     pub raw: String,
     /// Computed value for display (set by the recalc pass).
     pub value: Value,
-    /// Optional 256-colour foreground / background (cell formatting).
-    pub fg: Option<u8>,
-    pub bg: Option<u8>,
+    /// Optional truecolor foreground / background (cell formatting).
+    pub fg: Option<Rgb>,
+    pub bg: Option<Rgb>,
 }
 
 impl Cell {
@@ -75,7 +78,7 @@ impl Sheet {
         self.cells.get(&(r, c)).map(|c| c.value.clone()).unwrap_or(Value::Empty)
     }
     /// A cell's (fg, bg) colours, if any.
-    pub fn colors(&self, r: u32, c: u32) -> (Option<u8>, Option<u8>) {
+    pub fn colors(&self, r: u32, c: u32) -> (Option<Rgb>, Option<Rgb>) {
         self.cells.get(&(r, c)).map(|c| (c.fg, c.bg)).unwrap_or((None, None))
     }
     /// Set a cell's raw text. Grows the extent. Does NOT recompute — the caller
@@ -91,7 +94,7 @@ impl Sheet {
     }
     /// Set a cell's colours (None clears that slot). An otherwise-empty coloured
     /// cell is kept so you can highlight blank cells; clearing both removes it.
-    pub fn set_colors(&mut self, r: u32, c: u32, fg: Option<u8>, bg: Option<u8>) {
+    pub fn set_colors(&mut self, r: u32, c: u32, fg: Option<Rgb>, bg: Option<Rgb>) {
         let cell = self.cells.entry((r, c)).or_default();
         cell.fg = fg;
         cell.bg = bg;
