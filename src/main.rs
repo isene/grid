@@ -18,6 +18,7 @@ use model::{cell_ref, col_name, Book, Value};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const COL_W: usize = 10; // fixed column width (display columns)
+const HEADER_BG: &str = "240"; // grey band behind the column headers + row gutter
 
 /// Keybindings shown by the `?` popup.
 const KEYS: &[(&str, &str)] = &[
@@ -192,27 +193,28 @@ impl App {
         let topline = format!("{}{}{}  {}", style::coded(&cref, ",,b"), dirty, tag, raw);
         self.top.say(&topline);
 
-        // --- grid ---
+        // --- grid (HEADER_BG = grey background for the header row + gutter) ---
         let mut out = String::new();
-        // header row: blank gutter, then column letters
-        out.push_str(&" ".repeat(gutter));
+        // header row: grey corner, then column letters on a grey band.
+        // (a bg over pure whitespace gets dropped, so the corner is a █ block)
+        out.push_str(&style::coded(&"\u{2588}".repeat(gutter), HEADER_BG));
         for vc in 0..vcols {
             let c = self.top_col + vc as u32;
             let name = center(&col_name(c), COL_W);
             // coded() terminates with a full reset, so the pane restores its
             // own colours after each cell — the current column gets the accent.
-            out.push_str(&style::coded(&name, if c == self.cur_col { "11,,b" } else { ",,b" }));
+            out.push_str(&style::coded(&name, if c == self.cur_col { "11,240,b" } else { "252,240,b" }));
         }
         out.push('\n');
 
         for dr in 0..data_rows {
             let r = self.top_row + dr as u32;
-            // row-number gutter (right aligned, 1-space separator)
+            // row-number gutter (right aligned, 1-space separator) on a grey band
             let num = format!("{:>w$} ", r + 1, w = gutter - 1);
             if r == self.cur_row {
-                out.push_str(&style::coded(&num, "11,,b"));
+                out.push_str(&style::coded(&num, "11,240,b"));
             } else {
-                out.push_str(&num);
+                out.push_str(&style::coded(&num, "252,240"));
             }
             for vc in 0..vcols {
                 let c = self.top_col + vc as u32;
