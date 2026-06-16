@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a1a2e"/>
+      <stop offset="100%" style="stop-color:#0a0a14"/>
+    </linearGradient>
+    <linearGradient id="rust" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#f74c00"/>
+      <stop offset="100%" style="stop-color:#b7410e"/>
+    </linearGradient>
+    <radialGradient id="cellGlow" cx="50%" cy="50%" r="60%">
+      <stop offset="0%" style="stop-color:#f74c00;stop-opacity:0.45"/>
+      <stop offset="100%" style="stop-color:#f74c00;stop-opacity:0"/>
+    </radialGradient>
+  </defs>
+  <style>
+    @keyframes pulse { 0%,100% { opacity:0.82; } 50% { opacity:1; } }
+    .cursor { animation: pulse 2.2s ease-in-out infinite; }
+  </style>
+
+  <circle cx="128" cy="128" r="120" fill="url(#bg)" stroke="url(#rust)" stroke-width="3"/>
+
+  <!-- spreadsheet, columns A B C, header row + three data rows -->
+  <g transform="translate(56,60)">
+    <!-- cursor cell glow -->
+    <circle cx="72" cy="50" r="38" fill="url(#cellGlow)"/>
+
+    <!-- header band -->
+    <rect x="0" y="0" width="144" height="20" fill="#12121f"/>
+    <text x="24"  y="14" font-family="monospace" font-size="11" fill="#9aa" text-anchor="middle">A</text>
+    <text x="72"  y="14" font-family="monospace" font-size="11" fill="#9aa" text-anchor="middle">B</text>
+    <text x="120" y="14" font-family="monospace" font-size="11" fill="#9aa" text-anchor="middle">C</text>
+
+    <!-- cursor cell (B2), brand highlight -->
+    <rect class="cursor" x="48" y="40" width="48" height="20" fill="url(#rust)"/>
+
+    <!-- cell contents -->
+    <text x="24"  y="34" font-family="monospace" font-size="10" fill="#dfe0e6" text-anchor="middle">Qty</text>
+    <text x="72"  y="34" font-family="monospace" font-size="10" fill="#dfe0e6" text-anchor="middle">Price</text>
+    <text x="120" y="34" font-family="monospace" font-size="10" fill="#dfe0e6" text-anchor="middle">Sum</text>
+
+    <text x="24"  y="54" font-family="monospace" font-size="10" fill="#dfe0e6" text-anchor="middle">6</text>
+    <text x="72"  y="54" font-family="monospace" font-size="10" fill="#0a0a14" text-anchor="middle" font-weight="bold">7</text>
+    <text x="120" y="54" font-family="monospace" font-size="9"  fill="#51afef" text-anchor="middle">=A*B</text>
+
+    <text x="24"  y="74" font-family="monospace" font-size="10" fill="#888" text-anchor="middle"></text>
+    <text x="72"  y="74" font-family="monospace" font-size="9"  fill="#888" text-anchor="middle">Total</text>
+    <text x="120" y="74" font-family="monospace" font-size="10" fill="#4ccc66" text-anchor="middle">294</text>
+
+    <!-- grid lines -->
+    <g stroke="#f74c00" stroke-width="0.6" opacity="0.32">
+      <line x1="0" y1="20" x2="144" y2="20"/>
+      <line x1="0" y1="40" x2="144" y2="40"/>
+      <line x1="0" y1="60" x2="144" y2="60"/>
+      <line x1="48"  y1="0" x2="48"  y2="80"/>
+      <line x1="96"  y1="0" x2="96"  y2="80"/>
+    </g>
+    <rect x="0" y="0" width="144" height="80" fill="none" stroke="#f74c00" stroke-width="1.5"/>
+  </g>
+
+  <text x="128" y="204" font-family="monospace" font-size="25" font-weight="bold" fill="url(#rust)" text-anchor="middle" letter-spacing="4">grid</text>
+  <text x="128" y="222" font-family="monospace" font-size="8" fill="#888" text-anchor="middle">AI-native spreadsheet</text>
+</svg>

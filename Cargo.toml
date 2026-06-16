@@ -1,0 +1,18 @@
+[package]
+name = "grid"
+version = "0.1.0"
+edition = "2021"
+authors = ["Geir Isene <g@isene.com>"]
+description = "AI-native TUI spreadsheet — view/edit csv/xlsx/ods, Claude-powered editing. Part of the Fe2O3 Rust terminal suite."
+license = "Unlicense"
+repository = "https://github.com/isene/grid"
+
+[dependencies]
+crust = { version = "0.1", path = "../crust", package = "fe2o3-crust" }
+calamine = "0.26"          # read xlsx/xlsm/xlsb/xls/ods (cold path)
+rust_xlsxwriter = "0.79"   # write xlsx (cold path: only on save)
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true

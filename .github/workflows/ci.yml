@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  check:
+    name: Check & Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: grid
+
+      - name: Checkout crust
+        uses: actions/checkout@v4
+        with:
+          repository: isene/crust
+          path: crust
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        working-directory: grid
+        run: cargo build --release
+
+      - name: Binary size
+        working-directory: grid
+        run: ls -lh target/release/grid
