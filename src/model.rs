@@ -43,6 +43,16 @@ pub struct Cell {
     pub raw: String,
     /// Computed value for display (set by the recalc pass).
     pub value: Value,
+    /// Optional 256-colour foreground / background (cell formatting).
+    pub fg: Option<u8>,
+    pub bg: Option<u8>,
+}
+
+impl Cell {
+    /// A cell carries nothing worth keeping (no text, no colour).
+    fn is_blank(&self) -> bool {
+        self.raw.is_empty() && self.fg.is_none() && self.bg.is_none()
+    }
 }
 
 impl Default for Value {
@@ -64,14 +74,29 @@ impl Sheet {
     pub fn value(&self, r: u32, c: u32) -> Value {
         self.cells.get(&(r, c)).map(|c| c.value.clone()).unwrap_or(Value::Empty)
     }
-    /// Set a cell's raw text (empty clears it). Grows the extent. Does NOT
-    /// recompute — the caller runs recalc after a batch of edits.
+    /// A cell's (fg, bg) colours, if any.
+    pub fn colors(&self, r: u32, c: u32) -> (Option<u8>, Option<u8>) {
+        self.cells.get(&(r, c)).map(|c| (c.fg, c.bg)).unwrap_or((None, None))
+    }
+    /// Set a cell's raw text. Grows the extent. Does NOT recompute — the caller
+    /// runs recalc after a batch of edits. A cell with colour but no text is kept.
     pub fn set(&mut self, r: u32, c: u32, raw: String) {
-        if raw.is_empty() {
+        let cell = self.cells.entry((r, c)).or_default();
+        cell.raw = raw;
+        if cell.is_blank() {
             self.cells.remove(&(r, c));
-        } else {
-            let cell = self.cells.entry((r, c)).or_default();
-            cell.raw = raw;
+        }
+        self.nrows = self.nrows.max(r + 1);
+        self.ncols = self.ncols.max(c + 1);
+    }
+    /// Set a cell's colours (None clears that slot). An otherwise-empty coloured
+    /// cell is kept so you can highlight blank cells; clearing both removes it.
+    pub fn set_colors(&mut self, r: u32, c: u32, fg: Option<u8>, bg: Option<u8>) {
+        let cell = self.cells.entry((r, c)).or_default();
+        cell.fg = fg;
+        cell.bg = bg;
+        if cell.is_blank() {
+            self.cells.remove(&(r, c));
         }
         self.nrows = self.nrows.max(r + 1);
         self.ncols = self.ncols.max(c + 1);

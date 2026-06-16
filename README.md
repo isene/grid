@@ -32,7 +32,9 @@ No menus, no ribbons: keyboard-driven, instant, scriptable.
   cycle detection (`#CYCLE`).
 - **AI editing** — `c` → describe a change in plain English; Claude rewrites the
   sheet, formulas included.
-- **Undo** — every edit, clear and AI change is undoable (`u`).
+- **Cell colours** — set a cell's foreground/background (`C`, palette 0-255 or a
+  name); persists to xlsx natively and to CSV via a `.gcolors` sidecar.
+- **Undo** — every edit, clear, colour and AI change is undoable (`u`).
 - **Multi-sheet** — `Tab` cycles sheets in a workbook.
 - **Dates** — Excel date serials shown as readable `YYYY-MM-DD`.
 - Tiny binary, blocking input — zero idle CPU.
@@ -68,6 +70,7 @@ grid new.csv         # start a fresh sheet
 | `Enter` `i` | edit cell |
 | `=` | start a formula |
 | `c` | AI edit (Claude) |
+| `C` | set cell colour (fg,bg) |
 | `u` | undo |
 | `d` `Del` | clear cell |
 | `Tab` `S-Tab` | next / previous sheet |

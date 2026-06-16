@@ -28,6 +28,7 @@ const KEYS: &[(&str, &str)] = &[
     ("Enter  i", "edit the current cell"),
     ("=", "start a formula in the current cell"),
     ("c", "AI edit \u{2014} change the sheet by instruction (claude)"),
+    ("C", "set cell colour (fg,bg)"),
     ("u", "undo the last edit"),
     ("d  Del", "clear the current cell"),
     ("Tab S-Tab", "next / previous sheet"),
@@ -192,6 +193,7 @@ impl App {
                 let c = self.top_col + vc as u32;
                 let val = sheet.value(r, c);
                 let cell = fit_cell(&val, COL_W);
+                let (cfg, cbg) = sheet.colors(r, c);
                 if r == self.cur_row && c == self.cur_col {
                     if matches!(val, Value::Empty) {
                         // A bg colour over pure whitespace gets dropped (no glyph
@@ -201,6 +203,17 @@ impl App {
                     } else {
                         // Cursor cell: black on bright white, filling the whole cell.
                         out.push_str(&style::coded(&cell, "0,15"));
+                    }
+                } else if cfg.is_some() || cbg.is_some() {
+                    if matches!(val, Value::Empty) {
+                        // Colour over an empty cell: a solid bar in the bg colour
+                        // (anchors the run); fg-only on an empty cell shows nothing.
+                        match cbg {
+                            Some(bg) => out.push_str(&style::coded(&"\u{2588}".repeat(COL_W), &bg.to_string())),
+                            None => out.push_str(&cell),
+                        }
+                    } else {
+                        out.push_str(&style::coded(&cell, &color_spec(cfg, cbg)));
                     }
                 } else {
                     out.push_str(&cell);
@@ -215,7 +228,7 @@ impl App {
         // --- foot ---
         let foot = if self.status.is_empty() {
             format!(
-                " hjkl/\u{2191}\u{2193} move  Enter edit  = formula  c AI  u undo  d clear  Tab sheet  s save  q quit   grid {}",
+                " hjkl/\u{2191}\u{2193} move  Enter edit  = formula  c AI  C colour  u undo  d clear  Tab sheet  s save  q quit   grid {}",
                 VERSION
             )
         } else {
@@ -238,6 +251,20 @@ impl App {
             self.book.sheet_mut().set(self.cur_row, self.cur_col, v);
             self.book.dirty = true;
             eval::recalc(self.book.sheet_mut());
+        }
+    }
+
+    /// Set the current cell's foreground/background colour. Prompts for a
+    /// "fg,bg" spec (palette 0-255 or a colour name; blank clears).
+    fn set_color(&mut self) {
+        let (fg, bg) = self.book.sheet().colors(self.cur_row, self.cur_col);
+        let cur = if fg.is_some() || bg.is_some() { color_spec(fg, bg) } else { String::new() };
+        let prompt = "Cell colour fg,bg (0-255 or name; blank clears): ";
+        if let Some(input) = self.foot.ask_or_cancel(prompt, &cur) {
+            let (fg, bg) = parse_color_spec(&input);
+            self.snapshot();
+            self.book.sheet_mut().set_colors(self.cur_row, self.cur_col, fg, bg);
+            self.book.dirty = true;
         }
     }
 
@@ -368,6 +395,7 @@ impl App {
             "ENTER" | "i" => self.edit_cell(None),
             "=" => self.edit_cell(Some("=")),
             "c" => self.ai_edit(),
+            "C" => self.set_color(),
             "u" => self.undo(),
             "TAB" => self.switch_sheet(1),
             "S-TAB" => self.switch_sheet(-1),
@@ -411,6 +439,47 @@ fn make_panes(w: u16, h: u16) -> (Pane, Pane, Pane) {
         p.scroll = false;
     }
     (top, body, foot)
+}
+
+/// Build a crust `coded` spec ("fg,bg") from optional palette colours.
+fn color_spec(fg: Option<u8>, bg: Option<u8>) -> String {
+    format!(
+        "{},{}",
+        fg.map(|n| n.to_string()).unwrap_or_default(),
+        bg.map(|n| n.to_string()).unwrap_or_default()
+    )
+}
+
+/// Parse one colour token: a 0-255 palette number, a common name, or blank (None).
+fn parse_color(tok: &str) -> Option<u8> {
+    let t = tok.trim().to_ascii_lowercase();
+    if t.is_empty() {
+        return None;
+    }
+    if let Ok(n) = t.parse::<u8>() {
+        return Some(n);
+    }
+    Some(match t.as_str() {
+        "black" => 0,
+        "red" => 1,
+        "green" => 2,
+        "yellow" => 3,
+        "blue" => 4,
+        "magenta" => 5,
+        "cyan" => 6,
+        "white" => 7,
+        "grey" | "gray" => 8,
+        "orange" => 208,
+        _ => return None,
+    })
+}
+
+/// Parse a "fg,bg" colour spec into (fg, bg).
+fn parse_color_spec(s: &str) -> (Option<u8>, Option<u8>) {
+    let mut it = s.splitn(2, ',');
+    let fg = it.next().and_then(parse_color);
+    let bg = it.next().and_then(parse_color);
+    (fg, bg)
 }
 
 /// Fit a cell value into exactly `w` display columns, reserving a 1-col gap.

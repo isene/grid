@@ -35,7 +35,7 @@ pub fn save(book: &Book) -> std::io::Result<()> {
 /// `=formula` cells are written as formulas with their computed value cached,
 /// so the file opens with correct values even before a recalc.
 fn save_xlsx(book: &Book) -> std::io::Result<()> {
-    use rust_xlsxwriter::{Formula, Workbook};
+    use rust_xlsxwriter::{Color, Format, Formula, Workbook};
     let to_io = |e: rust_xlsxwriter::XlsxError| Error::new(ErrorKind::Other, e.to_string());
     let mut wb = Workbook::new();
     for sheet in &book.sheets {
@@ -43,18 +43,64 @@ fn save_xlsx(book: &Book) -> std::io::Result<()> {
         let _ = ws.set_name(&sheet.name); // ignore invalid/dup names → keep default
         for (&(r, c), cell) in &sheet.cells {
             let col = c as u16;
-            let res = if let Some(f) = cell.raw.strip_prefix('=') {
-                ws.write_formula(r, col, Formula::new(f).set_result(cell.value.display()))
-            } else if let Ok(n) = cell.raw.parse::<f64>() {
-                ws.write_number(r, col, n)
+            // Build a cell format from its colours (xterm-256 → RGB).
+            let fmt = if cell.fg.is_some() || cell.bg.is_some() {
+                let mut f = Format::new();
+                if let Some(fg) = cell.fg {
+                    f = f.set_font_color(Color::RGB(palette_rgb(fg)));
+                }
+                if let Some(bg) = cell.bg {
+                    f = f.set_background_color(Color::RGB(palette_rgb(bg)));
+                }
+                Some(f)
             } else {
-                ws.write_string(r, col, &cell.raw)
+                None
+            };
+            let res = if let Some(expr) = cell.raw.strip_prefix('=') {
+                let formula = Formula::new(expr).set_result(cell.value.display());
+                match &fmt {
+                    Some(f) => ws.write_formula_with_format(r, col, formula, f),
+                    None => ws.write_formula(r, col, formula),
+                }
+            } else if let Ok(n) = cell.raw.parse::<f64>() {
+                match &fmt {
+                    Some(f) => ws.write_number_with_format(r, col, n, f),
+                    None => ws.write_number(r, col, n),
+                }
+            } else {
+                match &fmt {
+                    Some(f) => ws.write_string_with_format(r, col, &cell.raw, f),
+                    None => ws.write_string(r, col, &cell.raw),
+                }
             };
             res.map_err(to_io)?;
         }
     }
     wb.save(&book.path).map_err(to_io)?;
     Ok(())
+}
+
+/// xterm-256 palette index → 0xRRGGBB, for xlsx cell colours.
+fn palette_rgb(n: u8) -> u32 {
+    const BASE: [u32; 16] = [
+        0x000000, 0x800000, 0x008000, 0x808000, 0x000080, 0x800080, 0x008080, 0xc0c0c0,
+        0x808080, 0xff0000, 0x00ff00, 0xffff00, 0x0000ff, 0xff00ff, 0x00ffff, 0xffffff,
+    ];
+    match n {
+        0..=15 => BASE[n as usize],
+        16..=231 => {
+            let n = n - 16;
+            let conv = |v: u8| -> u32 { if v == 0 { 0 } else { 55 + 40 * v as u32 } };
+            let r = conv(n / 36);
+            let g = conv((n / 6) % 6);
+            let b = conv(n % 6);
+            (r << 16) | (g << 8) | b
+        }
+        232..=255 => {
+            let v = 8 + 10 * (n as u32 - 232);
+            (v << 16) | (v << 8) | v
+        }
+    }
 }
 
 /// Read a workbook with calamine. Every sheet is loaded (cycle with Tab);
@@ -154,8 +200,54 @@ fn ext(path: &Path) -> String {
 
 pub fn load_csv(path: &Path) -> std::io::Result<Book> {
     let text = std::fs::read_to_string(path).unwrap_or_default();
-    let sheet = csv_to_sheet(&text, "Sheet1".into());
+    let mut sheet = csv_to_sheet(&text, "Sheet1".into());
+    apply_color_sidecar(path, &mut sheet);
     Ok(Book { sheets: vec![sheet], active: 0, path: path.to_path_buf(), dirty: false })
+}
+
+/// Cell colours can't live in CSV, so they ride in a sidecar `<file>.gcolors`
+/// (one `row,col,fg,bg` line per coloured cell) — lets colours round-trip in grid.
+fn sidecar_path(path: &Path) -> std::path::PathBuf {
+    std::path::PathBuf::from(format!("{}.gcolors", path.display()))
+}
+
+fn apply_color_sidecar(path: &Path, sheet: &mut Sheet) {
+    let Ok(text) = std::fs::read_to_string(sidecar_path(path)) else { return };
+    for line in text.lines() {
+        let p: Vec<&str> = line.split(',').collect();
+        if p.len() == 4 {
+            if let (Ok(r), Ok(c)) = (p[0].parse::<u32>(), p[1].parse::<u32>()) {
+                let fg = p[2].parse::<u8>().ok();
+                let bg = p[3].parse::<u8>().ok();
+                if fg.is_some() || bg.is_some() {
+                    sheet.set_colors(r, c, fg, bg);
+                }
+            }
+        }
+    }
+}
+
+fn write_color_sidecar(book: &Book) -> std::io::Result<()> {
+    let sheet = book.sheet();
+    let mut s = String::new();
+    for (&(r, c), cell) in &sheet.cells {
+        if cell.fg.is_some() || cell.bg.is_some() {
+            s.push_str(&format!(
+                "{},{},{},{}\n",
+                r,
+                c,
+                cell.fg.map(|n| n.to_string()).unwrap_or_default(),
+                cell.bg.map(|n| n.to_string()).unwrap_or_default()
+            ));
+        }
+    }
+    let path = sidecar_path(&book.path);
+    if s.is_empty() {
+        let _ = std::fs::remove_file(&path);
+        Ok(())
+    } else {
+        std::fs::write(&path, s)
+    }
 }
 
 /// Parse CSV text into a Sheet (raw cell text, formulas preserved).
@@ -192,7 +284,8 @@ fn parse_csv_line(line: &str) -> Vec<String> {
 }
 
 pub fn save_csv(book: &Book) -> std::io::Result<()> {
-    std::fs::write(&book.path, sheet_to_csv(book.sheet()))
+    std::fs::write(&book.path, sheet_to_csv(book.sheet()))?;
+    write_color_sidecar(book)
 }
 
 /// Serialize a Sheet to CSV text (raw cell text, RFC4180 quoting).
