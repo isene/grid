@@ -80,6 +80,11 @@ fn save_xlsx(book: &Book) -> std::io::Result<()> {
     Ok(())
 }
 
+/// xterm-256 palette index → `#rrggbb`, for preloading the prism picker.
+pub fn palette_hex(n: u8) -> String {
+    format!("#{:06x}", palette_rgb(n))
+}
+
 /// xterm-256 palette index → 0xRRGGBB, for xlsx cell colours.
 fn palette_rgb(n: u8) -> u32 {
     const BASE: [u32; 16] = [

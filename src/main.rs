@@ -11,6 +11,7 @@ mod io;
 mod model;
 
 use std::path::PathBuf;
+use std::process::Command;
 
 use crust::{style, Crust, Input, Pane};
 use model::{cell_ref, col_name, Book, Value};
@@ -28,7 +29,7 @@ const KEYS: &[(&str, &str)] = &[
     ("Enter  i", "edit the current cell"),
     ("=", "start a formula in the current cell"),
     ("c", "AI edit \u{2014} change the sheet by instruction (claude)"),
-    ("C", "set cell colour (fg,bg)"),
+    ("C", "set cell colour (prism picker)"),
     ("u", "undo the last edit"),
     ("d  Del", "clear the current cell"),
     ("Tab S-Tab", "next / previous sheet"),
@@ -254,9 +255,60 @@ impl App {
         }
     }
 
-    /// Set the current cell's foreground/background colour. Prompts for a
-    /// "fg,bg" spec (palette 0-255 or a colour name; blank clears).
+    /// Set the current cell's colour. Opens the prism picker if available,
+    /// otherwise falls back to a "fg,bg" text prompt.
     fn set_color(&mut self) {
+        if !self.pick_color_prism() {
+            self.set_color_prompt();
+        }
+    }
+
+    /// Launch prism as a visual colour picker, preloaded with the cell's current
+    /// colours; map the chosen hex back to the nearest xterm-256 palette index.
+    /// Returns false only when prism can't be launched (caller falls back).
+    fn pick_color_prism(&mut self) -> bool {
+        let (fg, bg) = self.book.sheet().colors(self.cur_row, self.cur_col);
+        let outfile = format!("/tmp/grid_pick_{}.txt", std::process::id());
+        let _ = std::fs::remove_file(&outfile);
+        let fg_hex = fg.map(io::palette_hex).unwrap_or_else(|| "#ffffff".into());
+        let bg_hex = bg.map(io::palette_hex).unwrap_or_else(|| "#000000".into());
+        Crust::cleanup();
+        let status = Command::new("prism")
+            .arg("--pair")
+            .arg(format!("--out={}", outfile))
+            .arg(&fg_hex)
+            .arg(&bg_hex)
+            .status();
+        Crust::init();
+        Crust::clear_screen();
+        self.top.invalidate();
+        self.body.invalidate();
+        self.foot.invalidate();
+        if status.is_err() {
+            let _ = std::fs::remove_file(&outfile);
+            return false; // prism not on PATH → caller uses the text prompt
+        }
+        if let Ok(text) = std::fs::read_to_string(&outfile) {
+            let mut nfg = fg;
+            let mut nbg = bg;
+            for line in text.lines() {
+                if let Some(h) = line.strip_prefix("fg=") {
+                    nfg = hex_to_palette(h.trim());
+                } else if let Some(h) = line.strip_prefix("bg=") {
+                    nbg = hex_to_palette(h.trim());
+                }
+            }
+            self.snapshot();
+            self.book.sheet_mut().set_colors(self.cur_row, self.cur_col, nfg, nbg);
+            self.book.dirty = true;
+        }
+        let _ = std::fs::remove_file(&outfile);
+        true
+    }
+
+    /// Text fallback when prism isn't available: "fg,bg" (palette 0-255 or a
+    /// colour name; blank clears).
+    fn set_color_prompt(&mut self) {
         let (fg, bg) = self.book.sheet().colors(self.cur_row, self.cur_col);
         let cur = if fg.is_some() || bg.is_some() { color_spec(fg, bg) } else { String::new() };
         let prompt = "Cell colour fg,bg (0-255 or name; blank clears): ";
@@ -439,6 +491,11 @@ fn make_panes(w: u16, h: u16) -> (Pane, Pane, Pane) {
         p.scroll = false;
     }
     (top, body, foot)
+}
+
+/// Map a `#rrggbb` hex to the nearest xterm-256 palette index.
+fn hex_to_palette(h: &str) -> Option<u8> {
+    style::parse_hex_color(h).map(|(r, g, b)| style::rgb_to_xterm(r, g, b))
 }
 
 /// Build a crust `coded` spec ("fg,bg") from optional palette colours.
