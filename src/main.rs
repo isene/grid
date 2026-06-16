@@ -221,33 +221,18 @@ impl App {
                 let val = sheet.value(r, c);
                 let cell = fit_cell(&val, COL_W);
                 let (cfg, cbg) = sheet.colors(r, c);
-                let empty = matches!(val, Value::Empty);
                 if r == self.cur_row && c == self.cur_col {
-                    // Cursor cell: black on bright white (empty → solid white bar,
-                    // since a bg over pure whitespace gets dropped).
-                    if empty {
-                        out.push_str(&style::coded(&"\u{2588}".repeat(COL_W), "15"));
-                    } else {
-                        out.push_str(&style::coded(&cell, "0,15"));
-                    }
+                    // Cursor cell: black on bright white, full-width.
+                    out.push_str(&hl_cell_pal(&cell, 0, 15));
                 } else if self.in_selection(r, c) {
                     // Selection band (grey), overrides the cell's own colour.
-                    if empty {
-                        out.push_str(&style::coded(&"\u{2588}".repeat(COL_W), "240"));
-                    } else {
-                        out.push_str(&style::coded(&cell, "0,250"));
-                    }
-                } else if cfg.is_some() || cbg.is_some() {
-                    if empty {
-                        // Solid bar in the bg colour (anchors the run); fg-only on
-                        // an empty cell shows nothing.
-                        match cbg {
-                            Some(bg) => out.push_str(&style::coded_rgb(&"\u{2588}".repeat(COL_W), Some(bg), None)),
-                            None => out.push_str(&cell),
-                        }
-                    } else {
-                        out.push_str(&style::coded_rgb(&cell, cfg, cbg));
-                    }
+                    out.push_str(&hl_cell_pal(&cell, 0, 245));
+                } else if let Some(bg) = cbg {
+                    // Coloured cell with a background, full-width.
+                    out.push_str(&hl_cell_rgb(&cell, cfg, bg));
+                } else if cfg.is_some() {
+                    // Foreground-only: no background to fill, so no anchor needed.
+                    out.push_str(&style::coded_rgb(&cell, cfg, None));
                 } else {
                     out.push_str(&cell);
                 }
@@ -560,6 +545,37 @@ fn make_panes(w: u16, h: u16) -> (Pane, Pane, Pane) {
         p.scroll = false;
     }
     (top, body, foot)
+}
+
+/// Render a fitted cell with a background, filling its trailing padding with a
+/// solid block in the bg colour. A terminal drops a bg over trailing whitespace
+/// (nothing anchors the run after the last glyph), so left-aligned text would
+/// only highlight its text; the block fixes that. (Palette colours.)
+fn hl_cell_pal(cell: &str, fg: u8, bg: u8) -> String {
+    let head = cell.trim_end_matches(' ');
+    let tail = cell.chars().count() - head.chars().count();
+    let mut s = String::new();
+    if !head.is_empty() {
+        s.push_str(&style::coded(head, &format!("{},{}", fg, bg)));
+    }
+    if tail > 0 {
+        s.push_str(&style::coded(&"\u{2588}".repeat(tail), &bg.to_string()));
+    }
+    s
+}
+
+/// Same as `hl_cell_pal` for truecolor cells (the trailing block is the bg RGB).
+fn hl_cell_rgb(cell: &str, fg: Option<model::Rgb>, bg: model::Rgb) -> String {
+    let head = cell.trim_end_matches(' ');
+    let tail = cell.chars().count() - head.chars().count();
+    let mut s = String::new();
+    if !head.is_empty() {
+        s.push_str(&style::coded_rgb(head, fg, Some(bg)));
+    }
+    if tail > 0 {
+        s.push_str(&style::coded_rgb(&"\u{2588}".repeat(tail), Some(bg), None));
+    }
+    s
 }
 
 /// `#rrggbb` for a colour, empty for None (for the text-prompt prefill).
