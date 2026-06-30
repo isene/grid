@@ -14,7 +14,7 @@ terminal suite.
 ## The idea
 
 A spreadsheet that stays out of your way and lets the AI do the tedious parts.
-Type values and formulas directly, or hit `c` and say *"add a Total row that
+Type values and formulas directly, or hit `I` and say *"add a Total row that
 sums each column"* — grid hands the sheet to Claude and applies what comes back.
 No menus, no ribbons: keyboard-driven, instant, scriptable.
 
@@ -30,7 +30,7 @@ No menus, no ribbons: keyboard-driven, instant, scriptable.
   (`A1:B3`), comparisons, `&` concatenation, and ~25 functions (SUM, AVERAGE,
   MIN/MAX, COUNT, IF, AND/OR, ROUND, CONCAT, VLOOKUP, …). Whole-sheet recalc with
   cycle detection (`#CYCLE`).
-- **AI editing** — `c` → describe a change in plain English; Claude rewrites the
+- **AI editing** — `I` → describe a change in plain English; Claude rewrites the
   sheet, formulas included.
 - **Range selection** — `v` starts a rectangular selection; colouring, clearing
   colour (`D`) and clearing content all apply to the whole block.
@@ -72,7 +72,7 @@ grid new.csv         # start a fresh sheet
 | `PgUp` `PgDn` | page |
 | `Enter` `i` | edit cell |
 | `=` | start a formula |
-| `c` | AI edit (Claude) |
+| `I` | AI edit (Claude) |
 | `v` | start / stop rectangular selection |
 | `C` | set cell / selection colour (prism) |
 | `D` | clear cell / selection colour |

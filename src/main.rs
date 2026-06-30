@@ -29,7 +29,7 @@ const KEYS: &[(&str, &str)] = &[
     ("Home End", "first / last column"),
     ("Enter  i", "edit the current cell"),
     ("=", "start a formula in the current cell"),
-    ("c", "AI edit \u{2014} change the sheet by instruction (claude)"),
+    ("I", "AI edit \u{2014} change the sheet by instruction (claude)"),
     ("v", "start / stop a rectangular selection"),
     ("C", "set cell / selection colour (prism picker)"),
     ("D", "clear cell / selection colour"),
@@ -246,7 +246,7 @@ impl App {
         // --- foot ---
         let foot = if self.status.is_empty() {
             format!(
-                " hjkl move  Enter edit  = formula  v select  C colour  D clr  c AI  u undo  d clear  s save  ? keys  q quit   grid {}",
+                " hjkl move  Enter edit  = formula  v select  C colour  D clr  I AI  u undo  d clear  s save  ? keys  q quit   grid {}",
                 VERSION
             )
         } else {
@@ -491,7 +491,7 @@ impl App {
             "PgUP" => self.cur_row = self.cur_row.saturating_sub(self.data_rows() as u32),
             "ENTER" | "i" => self.edit_cell(None),
             "=" => self.edit_cell(Some("=")),
-            "c" => self.ai_edit(),
+            "I" => self.ai_edit(), // Fe2O3-standard: one-shot claude -p ask
             "C" => self.set_color(),
             "D" => self.clear_color(),
             "v" => {

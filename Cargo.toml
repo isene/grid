@@ -1,6 +1,6 @@
 [package]
 name = "grid"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 authors = ["Geir Isene <g@isene.com>"]
 description = "AI-native TUI spreadsheet — view/edit csv/xlsx/ods, Claude-powered editing. Part of the Fe2O3 Rust terminal suite."
