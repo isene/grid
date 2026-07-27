@@ -649,6 +649,27 @@ fn center(s: &str, w: usize) -> String {
 }
 
 fn main() {
+    // --help and --version answer before the TUI touches the terminal.
+    // A tool that asks what this is — the fe2o3 launcher's ? popup, a
+    // packaging script, a curious shell — should get an answer, not a
+    // screen paint.
+    if std::env::args().skip(1).any(|a| a == "-h" || a == "--help") {
+        println!("grid — AI-native spreadsheet (Fe2O3 suite)");
+        println!();
+        println!("Usage: grid [FILE] [--pair]");
+        println!();
+        println!("  FILE      open this csv / xlsx / ods workbook");
+        println!("  --pair    pair-programming mode");
+        println!();
+        println!("Cells, formulas, multi-sheet workbooks, undo — and Claude to do the");
+        println!("tedious parts. ? in the app lists every key.");
+        return;
+    }
+    if std::env::args().skip(1).any(|a| a == "-v" || a == "--version") {
+        println!("grid {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+
     let path = std::env::args().nth(1).map(PathBuf::from);
     let mut book = match &path {
         Some(p) if p.exists() => match io::load(p) {
