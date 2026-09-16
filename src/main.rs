@@ -457,13 +457,28 @@ impl App {
         self.top_col = 0;
     }
 
-    fn save(&mut self) {
+    /// Save the book. A sheet started without a file asks for a name
+    /// first. False when nothing was saved.
+    fn save(&mut self) -> bool {
+        if self.book.path.as_os_str().is_empty() {
+            match self.foot.ask_or_cancel(" Save as: ", "sheet.csv") {
+                Some(name) if !name.trim().is_empty() => self.book.path = expand_home(name.trim()),
+                _ => {
+                    self.status = "Not saved".into();
+                    return false;
+                }
+            }
+        }
         match io::save(&self.book) {
             Ok(()) => {
                 self.book.dirty = false;
                 self.status = format!("Saved {}", self.book.path.display());
+                true
             }
-            Err(e) => self.status = format!("Save failed: {}", e),
+            Err(e) => {
+                self.status = format!("Save failed: {}", e);
+                false
+            }
         }
     }
 
@@ -507,7 +522,7 @@ impl App {
             "S-TAB" => self.switch_sheet(-1),
             "?" => self.show_help(),
             "d" | "DEL" => self.clear_cell(),
-            "s" => self.save(),
+            "s" => { self.save(); }
             "RESIZE" => self.resize(),
             _ => {}
         }
@@ -523,15 +538,21 @@ impl App {
         self.foot.say(" Unsaved changes \u{2014} save? y / n   (Esc cancels) ");
         loop {
             match Input::getchr(None).as_deref() {
-                Some("y") | Some("Y") => {
-                    self.save();
-                    return false;
-                }
+                // Stay open if the save did not happen, so nothing is lost.
+                Some("y") | Some("Y") => return !self.save(),
                 Some("n") | Some("N") => return false,
                 Some("ESC") => return true, // cancel — next render restores the foot
                 _ => {}
             }
         }
+    }
+}
+
+/// A typed path, with a leading `~/` meaning the home directory.
+fn expand_home(name: &str) -> PathBuf {
+    match (name.strip_prefix("~/"), std::env::var_os("HOME")) {
+        (Some(rest), Some(home)) => PathBuf::from(home).join(rest),
+        _ => PathBuf::from(name),
     }
 }
 
@@ -670,7 +691,8 @@ fn main() {
         return;
     }
 
-    let path = std::env::args().nth(1).map(PathBuf::from);
+    // The first argument that is not a flag, so `grid --pair` is no file.
+    let path = std::env::args().skip(1).find(|a| !a.starts_with('-')).map(PathBuf::from);
     let mut book = match &path {
         Some(p) if p.exists() => match io::load(p) {
             Ok(b) => b,
@@ -680,10 +702,8 @@ fn main() {
             }
         },
         Some(p) => Book::empty(p.clone()),
-        None => {
-            eprintln!("usage: grid <file.csv>");
-            std::process::exit(1);
-        }
+        // No file: a blank sheet, named on the first save.
+        None => Book::empty(PathBuf::new()),
     };
 
     for sheet in &mut book.sheets {

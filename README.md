@@ -60,6 +60,7 @@ cd grid && cargo build --release
 grid budget.csv      # open a file
 grid sheet.xlsx      # open a workbook (Tab cycles sheets)
 grid new.csv         # start a fresh sheet
+grid                 # a blank sheet, named when you first save
 ```
 
 ## Keys
