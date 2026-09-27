@@ -30,6 +30,7 @@ const KEYS: &[(&str, &str)] = &[
     ("Enter  i", "edit the current cell"),
     ("=", "start a formula in the current cell"),
     ("I", "AI edit \u{2014} change the sheet by instruction (claude)"),
+    ("C-A", "a full Claude session about the sheet, as in every Fe2O3 app"),
     ("v", "start / stop a rectangular selection"),
     ("C", "set cell / selection colour (prism picker)"),
     ("D", "clear cell / selection colour"),
@@ -376,6 +377,31 @@ impl App {
     /// as CSV, and replace the active sheet with what comes back. Blocks while
     /// Claude runs (shown as "AI working…") — fine, since input is blocking
     /// anyway and this only fires on the `c` key.
+    /// Ctrl+A, as in every Fe2O3 app: a full Claude session about the
+    /// sheet, which goes to it as CSV.
+    fn claude_session(&mut self) {
+        let csv = io::sheet_to_csv(self.book.sheet());
+        let file = if self.book.path.as_os_str().is_empty() {
+            "an unsaved sheet".to_string()
+        } else {
+            self.book.path.display().to_string()
+        };
+        let intro = format!(
+            "I am in grid, my spreadsheet, looking at {} (sheet {}) with the cursor on {}.",
+            file,
+            self.book.sheet().name,
+            model::cell_ref(self.cur_row, self.cur_col)
+        );
+        let started = crust::claude_session("grid", &intro, &csv);
+        Crust::clear_screen();
+        self.top.invalidate();
+        self.body.invalidate();
+        self.foot.invalidate();
+        if !started {
+            self.status = "claude is not on the PATH".into();
+        }
+    }
+
     fn ai_edit(&mut self) {
         self.sel_anchor = None;
         let instr = match self.foot.ask_or_cancel("AI edit: ", "") {
@@ -507,6 +533,7 @@ impl App {
             "ENTER" | "i" => self.edit_cell(None),
             "=" => self.edit_cell(Some("=")),
             "I" => self.ai_edit(), // Fe2O3-standard: one-shot claude -p ask
+            "C-A" => self.claude_session(), // Fe2O3-standard: full claude session
             "C" => self.set_color(),
             "D" => self.clear_color(),
             "v" => {

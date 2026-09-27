@@ -74,6 +74,7 @@ grid                 # a blank sheet, named when you first save
 | `Enter` `i` | edit cell |
 | `=` | start a formula |
 | `I` | AI edit (Claude) |
+| `Ctrl+A` | a full Claude session about the sheet, as in every Fe₂O₃ app |
 | `v` | start / stop rectangular selection |
 | `C` | set cell / selection colour (prism) |
 | `D` | clear cell / selection colour |
