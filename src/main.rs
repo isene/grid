@@ -32,6 +32,10 @@ const KEYS: &[(&str, &str)] = &[
     ("I", "AI edit \u{2014} change the sheet by instruction (claude)"),
     ("C-A", "a full Claude session about the sheet, as in every Fe2O3 app"),
     ("v", "start / stop a rectangular selection"),
+    ("y  p", "copy the cell or selection / paste it at the cursor"),
+    ("o  O", "sort the rows by this column / the other way round"),
+    ("+  -", "insert / delete, then r for rows or c for columns"),
+    ("P", "chart the selection, or the column the cursor is in"),
     ("C", "set cell / selection colour (prism picker)"),
     ("D", "clear cell / selection colour"),
     ("u", "undo the last edit"),
@@ -57,6 +61,7 @@ struct App {
     status: String,
     undo: Vec<(usize, model::Sheet)>, // (active index, sheet snapshot) before each edit
     sel_anchor: Option<(u32, u32)>,   // Some => a rectangular selection from here to the cursor
+    clip: Option<model::Clip>,        // what y copied, for p
 }
 
 impl App {
@@ -77,6 +82,7 @@ impl App {
             status: String::new(),
             undo: Vec::new(),
             sel_anchor: None,
+            clip: None,
         }
     }
 
@@ -247,7 +253,7 @@ impl App {
         // --- foot ---
         let foot = if self.status.is_empty() {
             format!(
-                " hjkl move  Enter edit  = formula  v select  C colour  D clr  I AI  u undo  d clear  s save  ? keys  q quit   grid {}",
+                " Enter edit  v select  y copy  p paste  o sort  +/- row, col  P chart  I AI  u undo  s save  ? keys  q quit   grid {}",
                 VERSION
             )
         } else {
@@ -323,6 +329,7 @@ impl App {
             .arg(&bg_hex)
             .status();
         Crust::init();
+        Crust::enable_bracketed_paste(); // the picker may have turned it off
         Crust::clear_screen();
         self.top.invalidate();
         self.body.invalidate();
@@ -373,6 +380,164 @@ impl App {
         self.sel_anchor = None;
     }
 
+    /// What every change to the cells ends with.
+    fn changed(&mut self) {
+        self.book.dirty = true;
+        self.sel_anchor = None;
+        eval::recalc(self.book.sheet_mut());
+    }
+
+    /// Copy the cell or the selection: for `p` here, and as text for
+    /// other programs (what the cells show, with tabs between them).
+    fn copy(&mut self) {
+        let (a, b) = self.selection_rect();
+        let sheet = self.book.sheet();
+        let text = (a.0..=b.0)
+            .map(|r| (a.1..=b.1).map(|c| sheet.value(r, c).display()).collect::<Vec<_>>().join("\t"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        crust::clipboard_copy(&text, "clipboard");
+        self.clip = Some(sheet.copy(a, b));
+        self.sel_anchor = None;
+        self.status = format!("Copied {}", span(a, b));
+    }
+
+    /// Paste what `y` copied, with its top left corner on the cursor.
+    /// A selection bigger than the copy is filled with it.
+    fn paste(&mut self) {
+        let Some(clip) = self.clip.take() else {
+            self.status = "Nothing is copied yet: y copies".into();
+            return;
+        };
+        let (a, mut b) = self.selection_rect();
+        b.0 = b.0.max(a.0 + clip.rows.len() as u32 - 1);
+        b.1 = b.1.max(a.1 + clip.rows[0].len() as u32 - 1);
+        self.snapshot();
+        self.book.sheet_mut().paste(&clip, a, b);
+        self.clip = Some(clip);
+        self.changed();
+        self.status = format!("Pasted into {}", span(a, b));
+    }
+
+    /// Text pasted from another program lands in the cells from the
+    /// cursor on: a line for each row, a tab between the cells.
+    fn paste_text(&mut self, text: &str) {
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        let text = text.trim_end_matches('\n');
+        if text.trim().is_empty() {
+            return;
+        }
+        self.snapshot();
+        let (mut rows, mut wide) = (0, 0);
+        for (i, line) in text.split('\n').enumerate() {
+            for (j, field) in line.split('\t').enumerate() {
+                // No control letters: a cell is printed on the terminal.
+                let field: String = field.chars().filter(|c| !c.is_control()).collect();
+                self.book.sheet_mut().set(self.cur_row + i as u32, self.cur_col + j as u32, field);
+                wide = wide.max(j + 1);
+            }
+            rows = i + 1;
+        }
+        self.changed();
+        self.status = format!("Pasted {} by {} cells", rows, wide);
+    }
+
+    /// Sort rows by the column the cursor is in. With a selection, its
+    /// rows. Without one, every row but the first, which is the header.
+    fn sort(&mut self, descending: bool) {
+        let (r0, r1) = match self.sel_anchor {
+            Some(_) => {
+                let (a, b) = self.selection_rect();
+                (a.0, b.0)
+            }
+            None => (1, self.book.sheet().nrows.saturating_sub(1)),
+        };
+        if r1 <= r0 {
+            self.status = "Nothing to sort: select the rows first".into();
+            return;
+        }
+        let kept = if self.sel_anchor.is_none() { "  (row 1 stays as the header; select rows to sort them all)" } else { "" };
+        self.snapshot();
+        self.book.sheet_mut().sort_rows(r0, r1, self.cur_col, descending);
+        self.changed();
+        self.status = format!("Sorted rows {} to {} by column {}{}", r0 + 1, r1 + 1, col_name(self.cur_col), kept);
+    }
+
+    /// Insert or delete rows or columns: as many as the selection has,
+    /// or the one the cursor is in. New ones come before the cursor.
+    fn reshape(&mut self, insert: bool) {
+        self.foot.say(if insert {
+            " Insert:  r rows above   c columns to the left   (Esc cancels) "
+        } else {
+            " Delete:  r rows   c columns   (Esc cancels) "
+        });
+        let rows = match Input::getchr(None).as_deref() {
+            Some("r") => true,
+            Some("c") => false,
+            _ => return,
+        };
+        let (a, b) = self.selection_rect();
+        let (at, n) = if rows { (a.0, b.0 - a.0 + 1) } else { (a.1, b.1 - a.1 + 1) };
+        self.snapshot();
+        self.book.sheet_mut().reshape(rows, at, n, insert);
+        self.changed();
+        (self.cur_row, self.cur_col) = a;
+        let what = match (rows, n) {
+            (true, 1) => format!("row {}", at + 1),
+            (true, _) => format!("rows {} to {}", at + 1, at + n),
+            (false, 1) => format!("column {}", col_name(at)),
+            (false, _) => format!("columns {} to {}", col_name(at), col_name(at + n - 1)),
+        };
+        self.status = format!("{} {}", if insert { "Inserted" } else { "Deleted" }, what);
+    }
+
+    /// A chart of the selection, or of the cursor's column, in a box
+    /// over the sheet. `l` draws lines, `b` bars, any other key closes.
+    fn show_chart(&mut self) {
+        let sheet = self.book.sheet();
+        let (a, b) = match self.sel_anchor {
+            Some(_) => self.selection_rect(),
+            None => ((0, self.cur_col), (sheet.nrows.saturating_sub(1), self.cur_col)),
+        };
+        let Some(chart) = chart_of(sheet, a, b) else {
+            self.status = "No numbers to chart there".into();
+            return;
+        };
+        let pw = self.term_w.saturating_sub(6).max(24);
+        let ph = self.term_h.saturating_sub(4).max(8);
+        let px = self.term_w.saturating_sub(pw) / 2 + 1;
+        let py = self.term_h.saturating_sub(ph) / 2 + 1;
+        let mut pane = Pane::new(px, py, pw, ph, 7, 0);
+        pane.scroll = false;
+        pane.wrap = false;
+        pane.border = true;
+        pane.border_fg = Some(11);
+        let room = (ph as usize).saturating_sub(4);
+        let mut bars = chart.named;
+        loop {
+            let mut s = style::coded(&format!(" Chart of {}", span(a, b)), "11,,b");
+            s.push_str("\n\n");
+            let drawn = chart_text(&chart, bars, (pw as usize).saturating_sub(2), room);
+            let mut lines = drawn.lines();
+            for _ in 0..room {
+                s.push(' ');
+                s.push_str(lines.next().unwrap_or(""));
+                s.push('\n');
+            }
+            s.push_str(&style::coded(" l lines   b bars   any other key closes", "245"));
+            pane.say(&s);
+            pane.border_refresh();
+            match Input::getchr(None).as_deref() {
+                Some("b") => bars = true,
+                Some("l") => bars = false,
+                _ => break,
+            }
+        }
+        self.top.invalidate();
+        self.body.invalidate();
+        self.foot.invalidate();
+    }
+
     /// AI edit: prompt for an instruction, hand the whole sheet to `claude -p`
     /// as CSV, and replace the active sheet with what comes back. Blocks while
     /// Claude runs (shown as "AI working…") — fine, since input is blocking
@@ -393,6 +558,7 @@ impl App {
             model::cell_ref(self.cur_row, self.cur_col)
         );
         let started = crust::claude_session("grid", &intro, &csv);
+        Crust::enable_bracketed_paste(); // claude turns it off when it leaves
         Crust::clear_screen();
         self.top.invalidate();
         self.body.invalidate();
@@ -544,6 +710,13 @@ impl App {
                 };
             }
             "ESC" => self.sel_anchor = None,
+            "y" => self.copy(),
+            "p" => self.paste(),
+            "o" => self.sort(false),
+            "O" => self.sort(true),
+            "+" => self.reshape(true),
+            "-" => self.reshape(false),
+            "P" => self.show_chart(),
             "u" => self.undo(),
             "TAB" => self.switch_sheet(1),
             "S-TAB" => self.switch_sheet(-1),
@@ -551,7 +724,11 @@ impl App {
             "d" | "DEL" => self.clear_cell(),
             "s" => { self.save(); }
             "RESIZE" => self.resize(),
-            _ => {}
+            _ => {
+                if let Some(text) = key.strip_prefix("PASTE\0") {
+                    self.paste_text(text);
+                }
+            }
         }
         true
     }
@@ -573,6 +750,102 @@ impl App {
             }
         }
     }
+}
+
+/// `B2`, or `B2:D5` for more than one cell.
+fn span(a: (u32, u32), b: (u32, u32)) -> String {
+    if a == b {
+        cell_ref(a.0, a.1)
+    } else {
+        format!("{}:{}", cell_ref(a.0, a.1), cell_ref(b.0, b.1))
+    }
+}
+
+/// What a chart is drawn from.
+struct Chart {
+    /// A name for each point along the chart.
+    points: Vec<String>,
+    /// Each series: its name, and its numbers as (point, value).
+    series: Vec<(String, Vec<(usize, f64)>)>,
+    /// The points got their names from the sheet, so bars say more
+    /// than lines do.
+    named: bool,
+}
+
+/// The chart of a rectangle of cells. Each column is a series; one row
+/// alone is a series that runs along the row. Text in front of the
+/// numbers names the series, and a first column of text names the
+/// points. None when there is no number in it.
+fn chart_of(sheet: &model::Sheet, (r0, c0): (u32, u32), (r1, c1): (u32, u32)) -> Option<Chart> {
+    let across = r0 == r1 && c1 > c0;
+    let (n_points, n_series) = if across { (c1 - c0 + 1, 1) } else { (r1 - r0 + 1, c1 - c0 + 1) };
+    let at = |i: u32, j: u32| if across { sheet.value(r0 + j, c0 + i) } else { sheet.value(r0 + i, c0 + j) };
+    let text = |v: Value| matches!(v, Value::Text(_));
+    let headed = n_points > 1 && (0..n_series).any(|j| text(at(0, j))) && !(0..n_series).any(|j| at(0, j).is_number());
+    let first = headed as u32;
+    let named = n_series > 1
+        && (first..n_points).any(|i| text(at(i, 0)))
+        && !(first..n_points).any(|i| at(i, 0).is_number());
+    let points = (first..n_points)
+        .map(|i| match (named, across) {
+            (true, _) => at(i, 0).display(),
+            (false, true) => col_name(c0 + i),
+            (false, false) => (r0 + i + 1).to_string(),
+        })
+        .collect();
+    let series: Vec<_> = (named as u32..n_series)
+        .map(|j| {
+            let name = match (headed, across) {
+                (true, _) => at(0, j).display(),
+                (false, true) => format!("row {}", r0 + 1),
+                (false, false) => col_name(c0 + j),
+            };
+            let numbers: Vec<_> = (first..n_points)
+                .filter_map(|i| match at(i, j) {
+                    Value::Number(n) if n.is_finite() => Some(((i - first) as usize, n)),
+                    _ => None,
+                })
+                .collect();
+            (name, numbers)
+        })
+        .filter(|(_, numbers)| !numbers.is_empty())
+        .collect();
+    (!series.is_empty()).then_some(Chart { points, series, named })
+}
+
+/// A colour for each series of a chart, in turn.
+const SERIES: [u8; 6] = [11, 14, 10, 13, 9, 12];
+
+/// A chart as `high` lines of text at most, `wide` columns across.
+/// Lines show every series. Bars show the first one, a bar for each
+/// point with its name in front.
+fn chart_text(chart: &Chart, bars: bool, wide: usize, high: usize) -> String {
+    if !bars {
+        if chart.series.iter().all(|(_, numbers)| numbers.len() < 2) {
+            return "A line needs two numbers or more. b shows bars.".into();
+        }
+        let mut line = plot::Line::new(wide, high.saturating_sub(2).max(2));
+        for (k, (name, numbers)) in chart.series.iter().enumerate() {
+            let values: Vec<f64> = numbers.iter().map(|&(_, v)| v).collect();
+            line.add(&values, SERIES[k % SERIES.len()], Some(name));
+        }
+        return line.render();
+    }
+    let (name, numbers) = &chart.series[0];
+    let fit = high.saturating_sub(2).max(1);
+    let mut bar = plot::Bar::new(wide, plot::Orientation::Horizontal);
+    for &(i, v) in numbers.iter().take(fit) {
+        let label: String = chart.points[i].chars().take(16).collect();
+        bar.add(&label, v, Some(SERIES[0]));
+    }
+    let mut out = name.clone();
+    if numbers.len() > fit {
+        out.push_str(&format!("  (the first {} of {})", fit, numbers.len()));
+    }
+    out.push_str("\n\n");
+    let drawn = bar.render();
+    out.push_str(if drawn.is_empty() { "Bars need a number above zero." } else { &drawn });
+    out
 }
 
 /// A typed path, with a leading `~/` meaning the home directory.
@@ -739,6 +1012,8 @@ fn main() {
 
     Crust::init();
     Crust::set_title("grid");
+    // A paste comes as one piece of text for the cells, not as keys.
+    Crust::enable_bracketed_paste();
     Crust::clear_screen();
     let mut app = App::new(book);
     loop {
@@ -752,5 +1027,59 @@ fn main() {
             None => break,
         }
     }
+    Crust::disable_bracketed_paste();
     Crust::cleanup();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sheet(rows: &[&[&str]]) -> model::Sheet {
+        let mut s = model::Sheet::default();
+        for (r, row) in rows.iter().enumerate() {
+            for (c, raw) in row.iter().enumerate() {
+                s.set(r as u32, c as u32, raw.to_string());
+            }
+        }
+        eval::recalc(&mut s);
+        s
+    }
+
+    #[test]
+    fn a_table_with_names_charts_as_named_series_over_named_points() {
+        let s = sheet(&[&["Month", "Rent", "Food"], &["Jan", "900", "310"], &["Feb", "900", "=C2+15"], &["Mar", "950", "n/a"]]);
+        let chart = chart_of(&s, (0, 0), (3, 2)).unwrap();
+        assert!(chart.named);
+        assert_eq!(chart.points, ["Jan", "Feb", "Mar"]);
+        assert_eq!(chart.series[0], ("Rent".to_string(), vec![(0, 900.0), (1, 900.0), (2, 950.0)]));
+        assert_eq!(chart.series[1], ("Food".to_string(), vec![(0, 310.0), (1, 325.0)]), "a cell that is no number is left out");
+        let bars = chart_text(&chart, true, 60, 12);
+        assert!(bars.starts_with("Rent\n\n") && bars.contains("Jan") && bars.contains("950"));
+        let lines = chart_text(&chart, false, 60, 12);
+        assert_eq!(lines.lines().count(), 12, "the chart, an empty line and the names");
+        assert!(lines.contains("Rent") && lines.contains("Food"));
+    }
+
+    #[test]
+    fn bare_numbers_chart_under_the_names_the_sheet_gives_them() {
+        let s = sheet(&[&["3", "5"], &["4", "6"], &["x", "7"]]);
+        let col = chart_of(&s, (0, 1), (2, 1)).unwrap();
+        assert!(!col.named);
+        assert_eq!(col.points, ["1", "2", "3"]);
+        assert_eq!(col.series, [("B".to_string(), vec![(0, 5.0), (1, 6.0), (2, 7.0)])]);
+        // One row is one series that runs along it.
+        let row = chart_of(&s, (1, 0), (1, 1)).unwrap();
+        assert_eq!(row.points, ["A", "B"]);
+        assert_eq!(row.series, [("row 2".to_string(), vec![(0, 4.0), (1, 6.0)])]);
+        assert!(chart_of(&s, (2, 0), (2, 0)).is_none(), "text alone is no chart");
+        let one = chart_of(&s, (0, 0), (0, 0)).unwrap();
+        assert!(chart_text(&one, false, 40, 10).starts_with("A line needs two numbers"));
+    }
+
+    #[test]
+    fn a_span_of_cells_is_named_by_its_corners() {
+        assert_eq!(span((1, 1), (1, 1)), "B2");
+        assert_eq!(span((1, 1), (4, 3)), "B2:D5");
+    }
 }

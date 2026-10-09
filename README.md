@@ -2,7 +2,7 @@
 
 <img src="img/grid.svg" align="left" width="150" height="150">
 
-![Version](https://img.shields.io/badge/version-0.1.1-blue) ![Rust](https://img.shields.io/badge/language-Rust-f74c00) ![License](https://img.shields.io/badge/license-Unlicense-green) ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-blue) ![Stay Amazing](https://img.shields.io/badge/Stay-Amazing-important)
+![Version](https://img.shields.io/badge/version-0.2.0-blue) ![Rust](https://img.shields.io/badge/language-Rust-f74c00) ![License](https://img.shields.io/badge/license-Unlicense-green) ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-blue) ![Stay Amazing](https://img.shields.io/badge/Stay-Amazing-important)
 
 An AI-native terminal spreadsheet. Open a CSV or workbook, navigate and edit
 like a spreadsheet, write formulas, or just tell Claude what to change. A small,
@@ -37,6 +37,18 @@ No menus, no ribbons: keyboard-driven, instant, scriptable.
 - **Cell colours** — true-colour (24-bit) foreground/background (`C`) via the
   [prism](https://github.com/isene/prism) picker (or a `#rrggbb`/name prompt);
   persists to xlsx natively and to CSV via a `.gcolors` sidecar.
+- **Copy and paste**: `y` copies the cell or the selection, `p` pastes it at
+  the cursor. A formula follows its new place, and a `$` pins a column or a row
+  (`$B$1`). One copied cell fills a whole selection.
+- **The system clipboard**: `y` also copies what the cells show, for other
+  programs. Text pasted from another program lands in the cells from the cursor
+  on, a tab between cells.
+- **Sort**: `o` sorts the rows by the column the cursor is in, `O` the other way
+  round. Row 1 stays as the header. With a selection, only its rows are sorted.
+- **Rows and columns**: `+` inserts and `-` deletes, then `r` for rows or `c`
+  for columns. Formulas follow the cells they point at.
+- **Charts**: `P` draws the selection as bars or lines. Text beside the numbers
+  names the bars, and text above them names each line.
 - **Undo** — every edit, clear, colour and AI change is undoable (`u`).
 - **Multi-sheet** — `Tab` cycles sheets in a workbook.
 - **Dates** — Excel date serials shown as readable `YYYY-MM-DD`.
@@ -48,8 +60,9 @@ No menus, no ribbons: keyboard-driven, instant, scriptable.
 # From a release (Linux/macOS, x86_64/aarch64)
 chmod +x grid-* && sudo cp grid-linux-x86_64 /usr/local/bin/grid
 
-# Or build from source (needs the sibling crust crate alongside)
+# Or build from source (needs the sibling crust and plot crates alongside)
 git clone https://github.com/isene/crust
+git clone https://github.com/isene/plot
 git clone https://github.com/isene/grid
 cd grid && cargo build --release
 ```
@@ -76,6 +89,10 @@ grid                 # a blank sheet, named when you first save
 | `I` | AI edit (Claude) |
 | `Ctrl+A` | a full Claude session about the sheet, as in every Fe₂O₃ app |
 | `v` | start / stop rectangular selection |
+| `y` `p` | copy the cell or selection / paste it at the cursor |
+| `o` `O` | sort the rows by this column / the other way round |
+| `+` `-` | insert / delete, then `r` for rows or `c` for columns |
+| `P` | chart the selection, or the column the cursor is in |
 | `C` | set cell / selection colour (prism) |
 | `D` | clear cell / selection colour |
 | `u` | undo |
@@ -92,11 +109,16 @@ grid                 # a blank sheet, named when you first save
 NOT ROUND ABS INT SQRT MOD POWER CONCAT LEN LEFT RIGHT MID UPPER LOWER TRIM
 VLOOKUP.
 
+A pasted formula points the same way from its new cell: `=B2+C2` copied one row
+down reads `=B3+C3`. A `$` keeps a column or a row where it is: `=B2*$F$1`.
+A formula that pointed at a deleted row or column shows `#REF`.
+
 ## Part of Fe2O3
 
 grid is one tool in the [Fe2O3](https://github.com/isene/fe2o3) suite of fast
 Rust terminal apps. It builds on [crust](https://github.com/isene/crust) (the
-TUI foundation) and pairs with [viewer](https://github.com/isene/viewer), which
+TUI foundation), draws its charts with [plot](https://github.com/isene/plot),
+and pairs with [viewer](https://github.com/isene/viewer), which
 launches grid for spreadsheet files.
 
 ## License

@@ -154,11 +154,18 @@ dependencies = [
 
 [[package]]
 name = "fe2o3-crust"
-version = "0.1.57"
+version = "0.1.61"
 dependencies = [
  "crossterm",
  "libc",
  "unicode-width",
+]
+
+[[package]]
+name = "fe2o3-plot"
+version = "0.1.0"
+dependencies = [
+ "fe2o3-crust",
 ]
 
 [[package]]
@@ -173,10 +180,11 @@ dependencies = [
 
 [[package]]
 name = "grid"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "calamine",
  "fe2o3-crust",
+ "fe2o3-plot",
  "rust_xlsxwriter",
 ]
 

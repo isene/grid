@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::model::{parse_ref, Sheet, Value};
+use crate::model::{col_name, parse_ref, Sheet, Value};
 
 pub fn recalc(sheet: &mut Sheet) {
     let coords: Vec<(u32, u32)> = sheet.cells.keys().copied().collect();
@@ -560,10 +560,144 @@ fn lex(s: &str) -> Result<Vec<Tok>, String> {
                 let name: String = chars[start..i].iter().filter(|&&c| c != '$').collect();
                 out.push(Tok::Name(name));
             }
+            // What is left of a reference to a deleted row or column.
+            '#' => return Err("REF".into()),
             _ => return Err("SYNTAX".into()),
         }
     }
     Ok(out)
+}
+
+// ---- references in a formula's text ----------------------------------------
+
+/// One cell reference as it is written in a formula: where it points,
+/// and whether a `$` pins its column or its row when the formula is
+/// pasted somewhere else.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ref {
+    pub row: u32,
+    pub col: u32,
+    pub pin_row: bool,
+    pub pin_col: bool,
+}
+
+impl Ref {
+    /// `$A$1`, `B7`: letters, digits and the pins.
+    fn text(&self) -> String {
+        let pin = |on| if on { "$" } else { "" };
+        format!("{}{}{}{}", pin(self.pin_col), col_name(self.col), pin(self.pin_row), self.row + 1)
+    }
+
+    /// A name from a formula as a reference, if it is one.
+    fn read(name: &str) -> Option<Ref> {
+        let (pin_col, rest) = match name.strip_prefix('$') {
+            Some(rest) => (true, rest),
+            None => (false, name),
+        };
+        let (letters, tail) = rest.split_at(rest.find(|c: char| !c.is_ascii_alphabetic())?);
+        let (pin_row, digits) = match tail.strip_prefix('$') {
+            Some(digits) => (true, digits),
+            None => (false, tail),
+        };
+        if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let (row, col) = parse_ref(&format!("{letters}{digits}"))?;
+        Some(Ref { row, col, pin_row, pin_col })
+    }
+}
+
+/// Write a formula again with its cell references changed. `change`
+/// gets each reference, and the far end too when it is a range
+/// (`A1:B3`). It gives back what to write, or None for `#REF!`: the
+/// cell it pointed at is gone.
+///
+/// Everything that is not a reference comes back as it was: function
+/// names, numbers, text in quotes. So does text that is no formula.
+/// The names are found the way `lex` finds them.
+pub fn rewrite_refs(raw: &str, mut change: impl FnMut(Ref, Option<Ref>) -> Option<(Ref, Option<Ref>)>) -> String {
+    if !raw.starts_with('=') {
+        return raw.to_string();
+    }
+    let chars: Vec<char> = raw.chars().collect();
+    let name_start = |c: char| c.is_ascii_alphabetic() || c == '_' || c == '$';
+    // A name from `from` on: its text, and where it ends.
+    let name_at = |from: usize| {
+        let mut end = from;
+        while end < chars.len() && (chars[end].is_ascii_alphanumeric() || matches!(chars[end], '_' | '$' | '.')) {
+            end += 1;
+        }
+        (chars[from..end].iter().collect::<String>(), end)
+    };
+    let past_spaces = |mut i: usize| {
+        while chars.get(i) == Some(&' ') {
+            i += 1;
+        }
+        i
+    };
+    let mut out = String::with_capacity(raw.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '"' {
+            // Text in quotes, where "" is one quote.
+            out.push(c);
+            i += 1;
+            while i < chars.len() {
+                out.push(chars[i]);
+                i += 1;
+                if chars[i - 1] == '"' {
+                    if chars.get(i) != Some(&'"') {
+                        break;
+                    }
+                    out.push('"');
+                    i += 1;
+                }
+            }
+        } else if c.is_ascii_digit() || c == '.' {
+            while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
+                out.push(chars[i]);
+                i += 1;
+            }
+        } else if name_start(c) {
+            let (name, end) = name_at(i);
+            let after = past_spaces(end);
+            i = end;
+            let first = match Ref::read(&name) {
+                // A name with a bracket after it is a function: LOG10(.
+                Some(first) if chars.get(after) != Some(&'(') => first,
+                _ => {
+                    out.push_str(&name);
+                    continue;
+                }
+            };
+            let mut last = None;
+            if chars.get(after) == Some(&':') {
+                let from = past_spaces(after + 1);
+                if chars.get(from).is_some_and(|&c| name_start(c)) {
+                    let (name, end) = name_at(from);
+                    if let Some(far) = Ref::read(&name) {
+                        last = Some(far);
+                        i = end;
+                    }
+                }
+            }
+            match change(first, last) {
+                Some((first, last)) => {
+                    out.push_str(&first.text());
+                    if let Some(last) = last {
+                        out.push(':');
+                        out.push_str(&last.text());
+                    }
+                }
+                None => out.push_str("#REF!"),
+            }
+        } else {
+            out.push(c);
+            i += 1;
+        }
+    }
+    out
 }
 
 // ---- parser (precedence climbing) ----------------------------------------
@@ -718,5 +852,41 @@ fn lbp(op: BinOp) -> u8 {
         BinOp::Add | BinOp::Sub => 3,
         BinOp::Mul | BinOp::Div => 4,
         BinOp::Pow => 5,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every reference one row down and one column right, pins or not.
+    fn down_right(raw: &str) -> String {
+        rewrite_refs(raw, |a, b| {
+            let mv = |r: Ref| Ref { row: r.row + 1, col: r.col + 1, ..r };
+            Some((mv(a), b.map(mv)))
+        })
+    }
+
+    #[test]
+    fn only_the_references_of_a_formula_are_rewritten() {
+        assert_eq!(down_right("=A1+B2*2"), "=B2+C3*2");
+        assert_eq!(down_right("=SUM(A1:B3) / $C$4"), "=SUM(B2:C4) / $D$5");
+        assert_eq!(down_right("=a1&\"A1 said \"\"A1\"\"\"&b$2"), "=B2&\"A1 said \"\"A1\"\"\"&C$3");
+        // A function whose name reads as a cell, a number, a word.
+        assert_eq!(down_right("=LOG10(A1)+1.5+TRUE"), "=LOG10(B2)+1.5+TRUE");
+        assert_eq!(down_right("=IF(A1>0, A1 : A2, \"\")"), "=IF(B2>0, B2:B3, \"\")");
+        // No formula: nothing is touched.
+        assert_eq!(down_right("A1 and B2"), "A1 and B2");
+        assert_eq!(down_right(""), "");
+    }
+
+    #[test]
+    fn a_reference_that_is_gone_reads_as_an_error() {
+        let gone = rewrite_refs("=A1+B2", |a, b| (a.col != 0).then_some((a, b)));
+        assert_eq!(gone, "=#REF!+B2");
+        let mut sheet = Sheet::default();
+        sheet.set(0, 0, gone);
+        recalc(&mut sheet);
+        assert_eq!(sheet.value(0, 0), Value::Error("REF".into()));
     }
 }
