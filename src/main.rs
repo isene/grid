@@ -253,8 +253,8 @@ impl App {
         // --- foot ---
         let foot = if self.status.is_empty() {
             format!(
-                " Enter edit  v select  y copy  p paste  o sort  +/- row, col  P chart  I AI  u undo  s save  ? keys  q quit   grid {}",
-                VERSION
+                " Enter edit  v select  y copy  p paste  o sort  +/- row, col  P chart  I AI  u undo  s save  ? keys  q quit   {}",
+                crust::version_tag("grid", VERSION)
             )
         } else {
             format!(" {}", self.status)
